@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
+import type { RequestHandler } from "express";
 import { db, messagesTable, conversationsTable, settingsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { GoogleGenAI } from "@google/genai";
@@ -108,8 +109,8 @@ When generating code, mentally:
 ${extra ? `\n## ADDITIONAL USER INSTRUCTIONS\n${extra}` : ""}`;
 }
 
-// Adicionado Promise<void> explícito
-router.get("/conversations/:id/messages", async (req, res): Promise<void> => {
+// Handler separado com tipagem explícita RequestHandler
+const listMessagesHandler: RequestHandler = async (req, res) => {
   try {
     const { id } = ListMessagesParams.parse({ id: Number(req.params.id) });
 
@@ -119,15 +120,16 @@ router.get("/conversations/:id/messages", async (req, res): Promise<void> => {
       .where(eq(messagesTable.conversationId, id))
       .orderBy(asc(messagesTable.createdAt));
 
-    return void res.json(messages); // Padronizado com return void
+    return res.json(messages); // return direto, sem void
   } catch (err) {
     req.log.error({ err }, "Failed to list messages");
-    return void res.status(500).json({ error: "Failed to list messages" }); // Padronizado
+    return res.status(500).json({ error: "Failed to list messages" }); //
+    return direto
   }
-});
+};
 
-// Adicionado Promise<void> explícito
-router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
+// Handler separado com tipagem explícita RequestHandler
+const chatHandler: RequestHandler = async (req, res) => {
   try {
     const { id } = SendMessageParams.parse({ id: Number(req.params.id) });
     const body = SendMessageBody.parse(req.body);
@@ -137,7 +139,7 @@ router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
     });
 
     if (!conv) {
-      return void res.status(404).json({ error: "Conversation not found" }); // Padronizado
+      return res.status(404).json({ error: "Conversation not found" }); // Linha 114: return direto
     }
 
     // Save user message
@@ -183,7 +185,6 @@ router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
     }
     chatHistory.push({ role: "user", content: userContent });
 
-    // Bloco GEMINI_API_KEY padronizado
     if (!GEMINI_API_KEY) {
       const [aiMsg] = await db
         .insert(messagesTable)
@@ -205,7 +206,7 @@ router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
           .where(eq(conversationsTable.id, id));
       }
 
-      return void res.json(aiMsg); // Padronizado com return void
+      return res.json(aiMsg); // return direto, sem void
     }
 
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
@@ -276,12 +277,16 @@ router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
       }
     }
 
-    return void res.json(aiMsg); // Padronizado com return void
+    return res.json(aiMsg); // Linha 139: return direto, sem void
 
   } catch (err: any) {
     req.log.error({ err }, "Failed to send message");
-    return void res.status(500).json({ error: err?.message || "Falha ao processar mensagem" }); // ✅ Padronizado
+    return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" }); // return direto
   }
-});
+};
+
+// Rotas usando os handlers tipados
+router.get("/conversations/:id/messages", listMessagesHandler);
+router.post("/conversations/:id/chat", chatHandler);
 
 export default router;
