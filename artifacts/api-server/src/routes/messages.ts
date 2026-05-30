@@ -1,5 +1,4 @@
-import { Router, Request, Response } from "express";
-import type { RequestHandler } from "express";
+import { Router } from "express";
 import { db, messagesTable, conversationsTable, settingsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { GoogleGenAI } from "@google/genai";
@@ -109,8 +108,8 @@ When generating code, mentally:
 ${extra ? `\n## ADDITIONAL USER INSTRUCTIONS\n${extra}` : ""}`;
 }
 
-// Handler separado com tipagem explícita RequestHandler
-const listMessagesHandler: RequestHandler = async (req, res) => {
+// ✅ Handler sem tipagem explícita - deixa o Express inferir
+router.get("/conversations/:id/messages", async (req, res) => {
   try {
     const { id } = ListMessagesParams.parse({ id: Number(req.params.id) });
 
@@ -120,16 +119,15 @@ const listMessagesHandler: RequestHandler = async (req, res) => {
       .where(eq(messagesTable.conversationId, id))
       .orderBy(asc(messagesTable.createdAt));
 
-    return res.json(messages); // return direto, sem void
+    return res.json(messages);
   } catch (err) {
     req.log.error({ err }, "Failed to list messages");
-    return res.status(500).json({ error: "Failed to list messages" }); //
-    return direto
+    return res.status(500).json({ error: "Failed to list messages" });
   }
-};
+});
 
-// Handler separado com tipagem explícita RequestHandler
-const chatHandler: RequestHandler = async (req, res) => {
+// ✅ Handler principal sem tipagem explícita - padrão que o TS entende
+router.post("/conversations/:id/chat", async (req, res) => {
   try {
     const { id } = SendMessageParams.parse({ id: Number(req.params.id) });
     const body = SendMessageBody.parse(req.body);
@@ -139,7 +137,7 @@ const chatHandler: RequestHandler = async (req, res) => {
     });
 
     if (!conv) {
-      return res.status(404).json({ error: "Conversation not found" }); // Linha 114: return direto
+      return res.status(404).json({ error: "Conversation not found" });
     }
 
     // Save user message
@@ -163,27 +161,23 @@ const chatHandler: RequestHandler = async (req, res) => {
 
     // Get settings
     const [settings] = await db.select().from(settingsTable).limit(1);
-
     const systemPrompt = buildSystemPrompt(settings);
 
-    // Build message history for Gemini
-    const chatHistory: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
+    // Build message history
+    const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
 
     for (const msg of history) {
       if (msg.id === userMsg.id) continue;
-      let content = msg.content;
-      if (msg.fileUrl && msg.fileName) {
-        content = `[Attached file: ${msg.fileName}]\n\n${content}`;
-      }
-      chatHistory.push({ role: msg.role as "user" | "assistant", content });
+      chatHistory.push({
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      });
     }
 
-    // Add current user message with file context if any
-    let userContent = body.content;
-    if (body.fileUrl && body.fileName) {
-      userContent = `[Attached file: ${body.fileName}]\n\n${body.content}`;
-    }
-    chatHistory.push({ role: "user", content: userContent });
+    chatHistory.push({
+      role: "user",
+      content: body.content,
+    });
 
     if (!GEMINI_API_KEY) {
       const [aiMsg] = await db
@@ -195,43 +189,17 @@ const chatHandler: RequestHandler = async (req, res) => {
         })
         .returning();
 
-      if (history.length <= 1) {
-        const title =
-          body.content.slice(0, 60) +
-          (body.content.length > 60 ? "..." : "");
-
-        await db
-          .update(conversationsTable)
-          .set({ title })
-          .where(eq(conversationsTable.id, id));
-      }
-
-      return res.json(aiMsg); // return direto, sem void
+      return res.json(aiMsg);
     }
 
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    // Build Gemini contents
-    const geminiContents = chatHistory.map((m, idx) => {
-      const isLastUser = m.role === "user" && idx === chatHistory.length - 1;
-      const parts: Array<Record<string, unknown>> = [{ text: m.content }];
-
-      if (isLastUser && body.fileUrl) {
-        const imgData = getImageData(body.fileUrl);
-        if (imgData) {
-          parts.push({ inlineData: { mimeType: imgData.mimeType, data: imgData.data } });
-        }
-      }
-
-      return {
-        role: m.role === "assistant" ? "model" : "user",
-        parts,
-      };
-    });
-
     const response = await genai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: geminiContents,
+      contents: chatHistory.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
       config: {
         systemInstruction: systemPrompt,
         maxOutputTokens: 65536,
@@ -241,7 +209,6 @@ const chatHandler: RequestHandler = async (req, res) => {
 
     const aiContent = response.text || "Sem resposta gerada.";
 
-    // Save AI response
     const [aiMsg] = await db
       .insert(messagesTable)
       .values({
@@ -251,42 +218,12 @@ const chatHandler: RequestHandler = async (req, res) => {
       })
       .returning();
 
-    // Auto-title conversation if it's the first exchange
-    if (history.length <= 1) {
-      try {
-        const titleResponse = await genai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: `Generate a short, concise title (max 6 words, no quotes) for a Roblox scripting conversation that starts with this message: "${body.content.slice(0, 200)}"` }],
-            },
-          ],
-          config: { maxOutputTokens: 30, temperature: 0.3 },
-        });
-        const title =
-          titleResponse.text?.trim().replace(/^["']|["']$/g, "") ||
-          body.content.slice(0, 50);
-        await db
-          .update(conversationsTable)
-          .set({ title: title.slice(0, 100) })
-          .where(eq(conversationsTable.id, id));
-      } catch {
-        const title = body.content.slice(0, 50) + (body.content.length > 50 ? "..." : "");
-        await db.update(conversationsTable).set({ title }).where(eq(conversationsTable.id, id));
-      }
-    }
-
-    return res.json(aiMsg); // Linha 139: return direto, sem void
+    return res.json(aiMsg);
 
   } catch (err: any) {
     req.log.error({ err }, "Failed to send message");
-    return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" }); // return direto
+    return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
   }
-};
-
-// Rotas usando os handlers tipados
-router.get("/conversations/:id/messages", listMessagesHandler);
-router.post("/conversations/:id/chat", chatHandler);
+});
 
 export default router;
