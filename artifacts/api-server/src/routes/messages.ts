@@ -182,19 +182,21 @@ router.post("/conversations/:id/chat", async (req, res) => {
     chatHistory.push({ role: "user", content: userContent });
 
     if (!GEMINI_API_KEY) {
-      const [aiMsg] = await db
-        .insert(messagesTable)
-        .values({
-          conversationId: id,
-          role: "assistant",
-          content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
-        })
-        .returning();
-      if (history.length <= 1) {
-        const title = body.content.slice(0, 60) + (body.content.length > 60 ? "..." : "");
-        await db.update(conversationsTable).set({ title }).where(eq(conversationsTable.id, id));
-      }
-      return res.json(aiMsg);
+  const [aiMsg] = await db
+    .insert(messagesTable)
+    .values({
+      conversationId: id,
+      role: "assistant",
+      content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
+    })
+    .returning();
+
+  if (history.length <= 1) {
+    const title = body.content.slice(0, 60) + (body.content.length > 60 ? "..." : "");
+    await db.update(conversationsTable).set({ title }).where(eq(conversationsTable.id, id));
+  }
+
+  return res.json(aiMsg); // 🔥 TEM que ter return
     }
 
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
