@@ -265,10 +265,10 @@ router.post("/conversations/:id/chat", async (req, res) => {
       }
     }
 
-    res.json(aiMsg);
+    return res.json(aiMsg);
   } catch (err: any) {
-    req.log.error({ err }, "Failed to send message");
-    res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
+  req.log.error({ err }, "Failed to send message");
+  return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
   }
 });
 
