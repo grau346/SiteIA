@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { db, messagesTable, conversationsTable, settingsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { GoogleGenAI } from "@google/genai";
@@ -108,122 +108,149 @@ When generating code, mentally:
 ${extra ? `\n## ADDITIONAL USER INSTRUCTIONS\n${extra}` : ""}`;
 }
 
-// ✅ Handler sem tipagem explícita - deixa o Express inferir
-router.get("/conversations/:id/messages", async (req, res) => {
-  try {
-    const { id } = ListMessagesParams.parse({ id: Number(req.params.id) });
+// ============================================================
+// ✅ WRAPPER ASSÍNCRONO PROFISSIONAL
+// ============================================================
 
-    const messages = await db
-      .select()
-      .from(messagesTable)
-      .where(eq(messagesTable.conversationId, id))
-      .orderBy(asc(messagesTable.createdAt));
+type AsyncRequestHandler = (
+  req: Request,
+  res: Response
+) => Promise<any>;
 
-    return res.json(messages);
-  } catch (err) {
-    req.log.error({ err }, "Failed to list messages");
-    return res.status(500).json({ error: "Failed to list messages" });
-  }
-});
-
-// ✅ Handler principal sem tipagem explícita - padrão que o TS entende
-router.post("/conversations/:id/chat", async (req, res) => {
-  try {
-    const { id } = SendMessageParams.parse({ id: Number(req.params.id) });
-    const body = SendMessageBody.parse(req.body);
-
-    const conv = await db.query.conversationsTable.findFirst({
-      where: eq(conversationsTable.id, id),
+const asyncHandler =
+  (fn: AsyncRequestHandler) =>
+  (req: Request, res: Response) => {
+    Promise.resolve(fn(req, res)).catch((err) => {
+      req.log?.error?.(err, "Unhandled error in async handler");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Internal server error" });
+      }
     });
+  };
 
-    if (!conv) {
-      return res.status(404).json({ error: "Conversation not found" });
-    }
+// ============================================================
+// HANDLERS (sem Promise<void>, sem return res.json())
+// ============================================================
 
-    // Save user message
-    const [userMsg] = await db
-      .insert(messagesTable)
-      .values({
-        conversationId: id,
-        role: "user",
-        content: body.content,
-        fileUrl: body.fileUrl || null,
-        fileName: body.fileName || null,
-      })
-      .returning();
+const listMessages = async (req: Request, res: Response) => {
+  const { id } = ListMessagesParams.parse({ id: Number(req.params.id) });
 
-    // Get conversation history
-    const history = await db
-      .select()
-      .from(messagesTable)
-      .where(eq(messagesTable.conversationId, id))
-      .orderBy(asc(messagesTable.createdAt));
+  const messages = await db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, id))
+    .orderBy(asc(messagesTable.createdAt));
 
-    // Get settings
-    const [settings] = await db.select().from(settingsTable).limit(1);
-    const systemPrompt = buildSystemPrompt(settings);
+  res.json(messages);
+};
 
-    // Build message history
-    const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
+const sendMessage = async (req: Request, res: Response) => {
+  const { id } = SendMessageParams.parse({ id: Number(req.params.id) });
+  const body = SendMessageBody.parse(req.body);
 
-    for (const msg of history) {
-      if (msg.id === userMsg.id) continue;
-      chatHistory.push({
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-      });
-    }
+  const conv = await db.query.conversationsTable.findFirst({
+    where: eq(conversationsTable.id, id),
+  });
 
-    chatHistory.push({
+  if (!conv) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+
+  // Save user message
+  const [userMsg] = await db
+    .insert(messagesTable)
+    .values({
+      conversationId: id,
       role: "user",
       content: body.content,
+      fileUrl: body.fileUrl || null,
+      fileName: body.fileName || null,
+    })
+    .returning();
+
+  // Get conversation history
+  const history = await db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, id))
+    .orderBy(asc(messagesTable.createdAt));
+
+  // Get settings
+  const [settings] = await db.select().from(settingsTable).limit(1);
+  const systemPrompt = buildSystemPrompt(settings);
+
+  // Build message history
+  const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
+
+  for (const msg of history) {
+    if (msg.id === userMsg.id) continue;
+    chatHistory.push({
+      role: msg.role as "user" | "assistant",
+      content: msg.content,
     });
+  }
 
-    if (!GEMINI_API_KEY) {
-      const [aiMsg] = await db
-        .insert(messagesTable)
-        .values({
-          conversationId: id,
-          role: "assistant",
-          content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
-        })
-        .returning();
+  chatHistory.push({
+    role: "user",
+    content: body.content,
+  });
 
-      return res.json(aiMsg);
-    }
-
-    const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
-    const response = await genai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: chatHistory.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
-      })),
-      config: {
-        systemInstruction: systemPrompt,
-        maxOutputTokens: 65536,
-        temperature: 0.7,
-      },
-    });
-
-    const aiContent = response.text || "Sem resposta gerada.";
-
+  if (!GEMINI_API_KEY) {
     const [aiMsg] = await db
       .insert(messagesTable)
       .values({
         conversationId: id,
         role: "assistant",
-        content: aiContent,
+        content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
       })
       .returning();
 
-    return res.json(aiMsg);
-
-  } catch (err: any) {
-    req.log.error({ err }, "Failed to send message");
-    return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
+    res.json(aiMsg);
+    return;
   }
-});
+
+  const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+  const response = await genai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: chatHistory.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    })),
+    config: {
+      systemInstruction: systemPrompt,
+      maxOutputTokens: 65536,
+      temperature: 0.7,
+    },
+  });
+
+  const aiContent = response.text || "Sem resposta gerada.";
+
+  const [aiMsg] = await db
+    .insert(messagesTable)
+    .values({
+      conversationId: id,
+      role: "assistant",
+      content: aiContent,
+    })
+    .returning();
+
+  res.json(aiMsg);
+};
+
+// ============================================================
+// ROTAS (usando asyncHandler wrapper)
+// ============================================================
+
+router.get(
+  "/conversations/:id/messages",
+  asyncHandler(listMessages)
+);
+
+router.post(
+  "/conversations/:id/chat",
+  asyncHandler(sendMessage)
+);
 
 export default router;
