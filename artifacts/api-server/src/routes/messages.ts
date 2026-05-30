@@ -192,13 +192,19 @@ router.post("/conversations/:id/chat", async (req, res) => {
     .returning();
 
   if (history.length <= 1) {
-    const title = body.content.slice(0, 60) + (body.content.length > 60 ? "..." : "");
-    await db.update(conversationsTable).set({ title }).where(eq(conversationsTable.id, id));
+    const title =
+      body.content.slice(0, 60) +
+      (body.content.length > 60 ? "..." : "");
+
+    await db
+      .update(conversationsTable)
+      .set({ title })
+      .where(eq(conversationsTable.id, id));
   }
 
-  return res.json(aiMsg); // 🔥 TEM que ter return
+  res.json(aiMsg);
+  return;
     }
-
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
     // Build Gemini contents — attach inline image for the last user message if present
@@ -267,7 +273,8 @@ router.post("/conversations/:id/chat", async (req, res) => {
       }
     }
 
-    return res.json(aiMsg);
+    res.json(aiMsg);
+return;
   } catch (err: any) {
   req.log.error({ err }, "Failed to send message");
   return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
