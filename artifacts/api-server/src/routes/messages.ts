@@ -108,7 +108,8 @@ When generating code, mentally:
 ${extra ? `\n## ADDITIONAL USER INSTRUCTIONS\n${extra}` : ""}`;
 }
 
-router.get("/conversations/:id/messages", async (req, res) => {
+// Adicionado Promise<void> explícito
+router.get("/conversations/:id/messages", async (req, res): Promise<void> => {
   try {
     const { id } = ListMessagesParams.parse({ id: Number(req.params.id) });
 
@@ -118,14 +119,15 @@ router.get("/conversations/:id/messages", async (req, res) => {
       .where(eq(messagesTable.conversationId, id))
       .orderBy(asc(messagesTable.createdAt));
 
-    res.json(messages);
+    return void res.json(messages); // Padronizado com return void
   } catch (err) {
     req.log.error({ err }, "Failed to list messages");
-    res.status(500).json({ error: "Failed to list messages" });
+    return void res.status(500).json({ error: "Failed to list messages" }); // Padronizado
   }
 });
 
-router.post("/conversations/:id/chat", async (req, res) => {
+// Adicionado Promise<void> explícito
+router.post("/conversations/:id/chat", async (req, res): Promise<void> => {
   try {
     const { id } = SendMessageParams.parse({ id: Number(req.params.id) });
     const body = SendMessageBody.parse(req.body);
@@ -135,8 +137,7 @@ router.post("/conversations/:id/chat", async (req, res) => {
     });
 
     if (!conv) {
-      res.status(404).json({ error: "Conversation not found" });
-      return;
+      return void res.status(404).json({ error: "Conversation not found" }); // Padronizado
     }
 
     // Save user message
@@ -167,7 +168,7 @@ router.post("/conversations/:id/chat", async (req, res) => {
     const chatHistory: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
 
     for (const msg of history) {
-      if (msg.id === userMsg.id) continue; // Skip current message, added separately
+      if (msg.id === userMsg.id) continue;
       let content = msg.content;
       if (msg.fileUrl && msg.fileName) {
         content = `[Attached file: ${msg.fileName}]\n\n${content}`;
@@ -182,6 +183,7 @@ router.post("/conversations/:id/chat", async (req, res) => {
     }
     chatHistory.push({ role: "user", content: userContent });
 
+    // Bloco GEMINI_API_KEY padronizado
     if (!GEMINI_API_KEY) {
       const [aiMsg] = await db
         .insert(messagesTable)
@@ -203,13 +205,12 @@ router.post("/conversations/:id/chat", async (req, res) => {
           .where(eq(conversationsTable.id, id));
       }
 
-      res.json(aiMsg);
-      return; // ✅ Linha 114 corrigida - adicionado return explícito
+      return void res.json(aiMsg); // Padronizado com return void
     }
-    
+
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    // Build Gemini contents — attach inline image for the last user message if present
+    // Build Gemini contents
     const geminiContents = chatHistory.map((m, idx) => {
       const isLastUser = m.role === "user" && idx === chatHistory.length - 1;
       const parts: Array<Record<string, unknown>> = [{ text: m.content }];
@@ -275,13 +276,11 @@ router.post("/conversations/:id/chat", async (req, res) => {
       }
     }
 
-    res.json(aiMsg);
-    return; // Linha 139 corrigida - adicionado return explícito
-    
+    return void res.json(aiMsg); // Padronizado com return void
+
   } catch (err: any) {
     req.log.error({ err }, "Failed to send message");
-    res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
-    return; // Adicionado return para consistência
+    return void res.status(500).json({ error: err?.message || "Falha ao processar mensagem" }); // ✅ Padronizado
   }
 });
 
