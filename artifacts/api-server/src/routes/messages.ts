@@ -135,7 +135,8 @@ router.post("/conversations/:id/chat", async (req, res) => {
     });
 
     if (!conv) {
-      return res.status(404).json({ error: "Conversation not found" });
+      res.status(404).json({ error: "Conversation not found" });
+      return;
     }
 
     // Save user message
@@ -182,29 +183,30 @@ router.post("/conversations/:id/chat", async (req, res) => {
     chatHistory.push({ role: "user", content: userContent });
 
     if (!GEMINI_API_KEY) {
-  const [aiMsg] = await db
-    .insert(messagesTable)
-    .values({
-      conversationId: id,
-      role: "assistant",
-      content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
-    })
-    .returning();
+      const [aiMsg] = await db
+        .insert(messagesTable)
+        .values({
+          conversationId: id,
+          role: "assistant",
+          content: "⚠️ GEMINI_API_KEY não configurada. Adicione sua chave do Google Gemini nas configurações.",
+        })
+        .returning();
 
-  if (history.length <= 1) {
-    const title =
-      body.content.slice(0, 60) +
-      (body.content.length > 60 ? "..." : "");
+      if (history.length <= 1) {
+        const title =
+          body.content.slice(0, 60) +
+          (body.content.length > 60 ? "..." : "");
 
-    await db
-      .update(conversationsTable)
-      .set({ title })
-      .where(eq(conversationsTable.id, id));
-  }
+        await db
+          .update(conversationsTable)
+          .set({ title })
+          .where(eq(conversationsTable.id, id));
+      }
 
-  res.json(aiMsg);
-  return;
+      res.json(aiMsg);
+      return; // ✅ Linha 114 corrigida - adicionado return explícito
     }
+    
     const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
     // Build Gemini contents — attach inline image for the last user message if present
@@ -274,10 +276,12 @@ router.post("/conversations/:id/chat", async (req, res) => {
     }
 
     res.json(aiMsg);
-return;
+    return; // Linha 139 corrigida - adicionado return explícito
+    
   } catch (err: any) {
-  req.log.error({ err }, "Failed to send message");
-  return res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
+    req.log.error({ err }, "Failed to send message");
+    res.status(500).json({ error: err?.message || "Falha ao processar mensagem" });
+    return; // Adicionado return para consistência
   }
 });
 
